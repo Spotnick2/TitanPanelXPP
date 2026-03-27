@@ -1,0 +1,9 @@
+## Interface: 120001, 120000, 110207, 50503, 20505, 11508
+## Title: Titan Panel [|cffeda55fXP+|r]
+## IconTexture: Interface\Icons\xp_icon
+## Version: 1.0.1
+## Notes: Adds an XP progress bar with detailed leveling statistics to Titan Panel
+## Author: Spotnick
+## SavedVariables:
+## Dependencies: Titan
+TitanPanelXPP.lua
