@@ -38,9 +38,9 @@ local xpp = {
     frame = nil,
     lastMobXP = 0,
     XPGain = 0,
-    initXP = 0,
-    lastXP = 0,
-    accumXP = 0,
+    lastXP = nil,
+    lastMax = nil,
+    lastLevel = nil,
     sessionXP = 0,
     startSessionTime = 0,
     totalTime = 0,
@@ -58,45 +58,28 @@ local barBG, xpBar, completeQuestBar, incompleteQuestBar, restedBar, barBorder
 local barTextLeft, barTextCenter, barTextRight
 local barIconOverlay  -- our own icon on top of the bar
 
--- Chat message suppression for RequestTimePlayed
-local xpp_requesting = false
-local xpp_chat_hooked = false
+-- ******************************** Utility *******************************
 
-local function HookTimePlayed()
-    if xpp_chat_hooked then return end
-    xpp_chat_hooked = true
-
-    if Titan_Global and Titan_Global.switch and Titan_Global.switch.chat_class then
-        if ChatFrameUtil and ChatFrameUtil.DisplayTimePlayed then
-            local orig = ChatFrameUtil.DisplayTimePlayed
-            ChatFrameUtil.DisplayTimePlayed = function(...)
-                if xpp_requesting then
-                    xpp_requesting = false
-                    return
-                end
-                return orig(...)
-            end
-        end
-    else
-        if ChatFrame_DisplayTimePlayed then
-            local orig = ChatFrame_DisplayTimePlayed
-            ChatFrame_DisplayTimePlayed = function(...)
-                if xpp_requesting then
-                    xpp_requesting = false
-                    return
-                end
-                return orig(...)
-            end
-        end
-    end
+local function Plain(value)
+    if issecretvalue and issecretvalue(value) then return nil end
+    return value
 end
 
--- ******************************** Utility *******************************
+local function ReadXP()
+    local current = Plain(UnitXP("player"))
+    local maximum = Plain(UnitXPMax("player"))
+    if current == nil or maximum == nil or maximum <= 0 then return nil end
+    return current, maximum
+end
 
 ---Check if player is at max level
 ---@return boolean
 local function IsMaxLevel()
-    local level = UnitLevel("player") or 0
+    local level = Plain(UnitLevel("player")) or 0
+    if GetMaxPlayerLevel then
+        local maxLevel = Plain(GetMaxPlayerLevel())
+        if maxLevel and maxLevel > 0 then return level >= maxLevel end
+    end
     if GetMaxLevelForExpansionLevel then
         local exp = GetExpansionLevel and GetExpansionLevel() or 0
         local ml = GetMaxLevelForExpansionLevel(exp)
@@ -147,41 +130,79 @@ end
 
 ---Request time played from server without spamming chat
 local function RefreshPlayed()
-    if xpp.frame and xpp.frame.RequestTimePlayed then
-        xpp.frame:RequestTimePlayed()
+    if Titan_G and Titan_G.utils and Titan_G.utils.GetTimePlayed then
+        Titan_G.utils.GetTimePlayed("XP+")
     else
-        xpp_requesting = true
-        pcall(RequestTimePlayed)
+        RequestTimePlayed()
     end
 end
 
----Hide or show the default WoW experience bar based on user setting
+-- Edit Mode owns the status bar. Reparent its manager only outside combat and
+-- Edit Mode; the child container calls methods on its parent and cannot be moved.
+local statusBarParent, statusBarHome, statusBarHooked, statusBarScheduled
+local editModeHooked = false
+local statusBarWanted = false
+local statusBarWatcher = CreateFrame("Frame")
+local SyncStatusBar
+
+local function ScheduleStatusBar()
+    if statusBarScheduled then return end
+    statusBarScheduled = true
+    C_Timer.After(0, function()
+        statusBarScheduled = false
+        SyncStatusBar()
+    end)
+end
+
+statusBarWatcher:SetScript("OnEvent", function(self, event)
+    if event == "PLAYER_REGEN_ENABLED" then self:UnregisterEvent(event) end
+    ScheduleStatusBar()
+end)
+pcall(function() statusBarWatcher:RegisterEvent("EDIT_MODE_LAYOUTS_UPDATED") end)
+
+SyncStatusBar = function()
+    local manager = StatusTrackingBarManager
+    if not manager then return end
+
+    local editMode = EditModeManagerFrame
+    if editMode and not editModeHooked then
+        editModeHooked = true
+        editMode:HookScript("OnShow", ScheduleStatusBar)
+        editMode:HookScript("OnHide", ScheduleStatusBar)
+    end
+    local inEditMode = editMode and editMode:IsShown()
+    if InCombatLockdown() then
+        statusBarWatcher:RegisterEvent("PLAYER_REGEN_ENABLED")
+        return
+    end
+    if not statusBarParent then
+        statusBarParent = CreateFrame("Frame", nil, UIParent)
+        statusBarParent:Hide()
+    end
+    if statusBarWanted and not inEditMode then
+        if not statusBarHooked then
+            statusBarHooked = true
+            hooksecurefunc(manager, "SetParent", function(_, parent)
+                if statusBarWanted and parent ~= statusBarParent then ScheduleStatusBar() end
+            end)
+        end
+        if manager:GetParent() ~= statusBarParent then
+            statusBarHome = manager:GetParent()
+            manager:SetParent(statusBarParent)
+        end
+    elseif manager:GetParent() == statusBarParent and statusBarHome then
+        manager:SetParent(statusBarHome)
+    end
+end
+
 local function UpdateDefaultXPBar()
     local ok, hideIt = pcall(TitanGetVar, TITAN_XPP_ID, "HideDefaultXPBar")
-    if not ok then return end
-
-    if hideIt then
-        -- Retail: StatusTrackingBarManager or MainStatusTrackingBarContainer
-        if StatusTrackingBarManager then
-            pcall(function() StatusTrackingBarManager:Hide() end)
-        end
-        if MainStatusTrackingBarContainer then
-            pcall(function() MainStatusTrackingBarContainer:Hide() end)
-        end
-        -- Classic: MainMenuExpBar
-        if MainMenuExpBar then
-            pcall(function() MainMenuExpBar:Hide() end)
-        end
-    else
-        if StatusTrackingBarManager then
-            pcall(function() StatusTrackingBarManager:Show() end)
-        end
-        if MainStatusTrackingBarContainer then
-            pcall(function() MainStatusTrackingBarContainer:Show() end)
-        end
-        if MainMenuExpBar then
-            pcall(function() MainMenuExpBar:Show() end)
-        end
+    statusBarWanted = ok and hideIt and xpp.frame and xpp.frame:IsShown() and not xpp.isMaxLevel
+    if StatusTrackingBarManager then
+        ScheduleStatusBar()
+    elseif MainMenuExpBar and not (WOW_PROJECT_CAMELOT and WOW_PROJECT_ID == WOW_PROJECT_CAMELOT) then
+        -- Classic's bar has no Edit Mode system manager.
+        MainMenuExpBar:SetShown(not statusBarWanted)
     end
 end
 
@@ -193,6 +214,24 @@ end
 local function GetQuestXPBreakdown()
     local completeXP = 0
     local incompleteXP = 0
+
+    if C_QuestLog and C_QuestLog.GetInfo then
+        for i = 1, C_QuestLog.GetNumQuestLogEntries() do
+            local info = C_QuestLog.GetInfo(i)
+            if info and not info.isHeader and not info.isHidden and info.questID then
+                local questID = Plain(info.questID)
+                local rewardXP = questID and Plain(GetQuestLogRewardXP(questID))
+                if rewardXP and rewardXP > 0 then
+                    if C_QuestLog.IsComplete(questID) or C_QuestLog.ReadyForTurnIn(questID) then
+                        completeXP = completeXP + rewardXP
+                    else
+                        incompleteXP = incompleteXP + rewardXP
+                    end
+                end
+            end
+        end
+        return completeXP, incompleteXP
+    end
 
     -- Grab API references (matching WA pattern for compat)
     local _GetNumQuestLogEntries = (C_QuestLog and C_QuestLog.GetNumQuestLogEntries) or GetNumQuestLogEntries
@@ -246,24 +285,40 @@ end
 
 ---Refresh the cached quest XP values
 local function RefreshQuestXP()
-    local complete, incomplete = GetQuestXPBreakdown()
-    xpp.completedQuestXP = complete
-    xpp.incompleteQuestXP = incomplete
-    xpp.totalQuestXP = complete + incomplete
+    local ok, complete, incomplete = pcall(GetQuestXPBreakdown)
+    if ok then
+        xpp.completedQuestXP = complete
+        xpp.incompleteQuestXP = incomplete
+        xpp.totalQuestXP = complete + incomplete
+    end
 end
 
 -- ******************************** Session *******************************
 
 ---Reset session tracking variables
----@param self Button
-local function ResetSession(self)
-    xpp.accumXP = 0
+local function ResetSession()
     xpp.sessionXP = 0
     xpp.startSessionTime = time()
+    xpp.lastXP, xpp.lastMax = ReadXP()
+    xpp.lastLevel = Plain(UnitLevel("player"))
+    xpp.XPGain = 0
+end
 
-    local xp = UnitXP("player")
-    xpp.initXP = xp or 0
-    xpp.lastXP = xpp.initXP
+local function UpdateSessionXP()
+    local current, maximum = ReadXP()
+    if current == nil then return end
+    local level = Plain(UnitLevel("player"))
+    if xpp.lastXP ~= nil then
+        local crossed = (level and xpp.lastLevel and level > xpp.lastLevel)
+            or maximum ~= xpp.lastMax
+        local gain = crossed and (xpp.lastMax - xpp.lastXP + current)
+            or (current - xpp.lastXP)
+        if gain > 0 then
+            xpp.sessionXP = xpp.sessionXP + gain
+            xpp.XPGain = gain
+        end
+    end
+    xpp.lastXP, xpp.lastMax, xpp.lastLevel = current, maximum, level
 end
 
 ---Timer callback: accumulate time and refresh button
@@ -385,10 +440,14 @@ local function UpdateBar(button)
         return
     end
 
-    local totalXP = UnitXPMax("player") or 1
-    local currentXP = UnitXP("player") or 0
-    local level = UnitLevel("player") or 0
-    local exhaustion = GetXPExhaustion() or 0
+    local currentXP, totalXP = ReadXP()
+    if not currentXP then
+        HideBar()
+        xpp.updatingBar = false
+        return
+    end
+    local level = Plain(UnitLevel("player")) or 0
+    local exhaustion = Plain(GetXPExhaustion()) or 0
     local remainXP = totalXP - currentXP
     local percent = (totalXP > 0) and (currentXP / totalXP * 100) or 0
     local restedPct = (totalXP > 0) and (exhaustion / totalXP * 100) or 0
@@ -547,10 +606,10 @@ local function GetButtonText(id)
     end
 
     -- Text-only fallback (bar disabled)
-    local totalXP = UnitXPMax("player") or 1
-    local currentXP = UnitXP("player") or 0
+    local currentXP, totalXP = ReadXP()
+    if not currentXP then return "XP+: ", "" end
     local percent = (totalXP > 0) and (currentXP / totalXP * 100) or 0
-    local level = UnitLevel("player") or 0
+    local level = Plain(UnitLevel("player")) or 0
 
     local text = string.format("Lv%d  %s / %s  %.1f%%",
         level, FormatNumber(currentXP), FormatNumber(totalXP), percent)
@@ -565,13 +624,13 @@ local function GetTooltipText()
     if not button then return "" end
     if xpp.isMaxLevel then return "" end
 
-    local totalXP = UnitXPMax("player") or 1
-    local currentXP = UnitXP("player") or 0
+    local currentXP, totalXP = ReadXP()
+    if not currentXP then return "" end
     local toLevelXP = totalXP - currentXP
-    local level = UnitLevel("player") or 0
+    local level = Plain(UnitLevel("player")) or 0
     local percent = (totalXP > 0) and (currentXP / totalXP * 100) or 0
     local toLevelPct = (totalXP > 0) and (toLevelXP / totalXP * 100) or 0
-    local exhaustion = GetXPExhaustion() or 0
+    local exhaustion = Plain(GetXPExhaustion()) or 0
     local restedPct = (totalXP > 0) and (exhaustion / totalXP * 100) or 0
     local questXP = xpp.completedQuestXP or 0
     local questPct = (totalXP > 0) and (questXP / totalXP * 100) or 0
@@ -695,6 +754,7 @@ local function OnEvent(self, event, a1, a2, ...)
         if IsMaxLevel() then
             xpp.isMaxLevel = true
             HideBar()
+            UpdateDefaultXPBar()
             -- Unregister XP-related events (guild broadcast uses its own frame)
             pcall(function() self:UnregisterEvent("TIME_PLAYED_MSG") end)
             pcall(function() self:UnregisterEvent("PLAYER_XP_UPDATE") end)
@@ -715,8 +775,8 @@ local function OnEvent(self, event, a1, a2, ...)
             return
         end
 
-        if a1 == true then
-            ResetSession(self)
+        if not xpp.startSessionTime or xpp.startSessionTime == 0 then
+            ResetSession()
         end
         -- Initial quest XP scan
         RefreshQuestXP()
@@ -727,23 +787,18 @@ local function OnEvent(self, event, a1, a2, ...)
         TitanPanelButton_UpdateButton(TITAN_XPP_ID)
 
     elseif event == "PLAYER_XP_UPDATE" then
-        xpp.XPGain = (UnitXP("player") or 0) - (xpp.lastXP or 0)
-        xpp.lastXP = UnitXP("player") or 0
-        if xpp.XPGain < 0 then
-            xpp.XPGain = 0
-        end
-        xpp.sessionXP = (UnitXP("player") or 0) - xpp.initXP + xpp.accumXP
+        UpdateSessionXP()
         TitanPanelButton_UpdateButton(TITAN_XPP_ID)
 
     elseif event == "PLAYER_LEVEL_UP" then
-        local newLevel = a1 or (UnitLevel("player") or 0)
+        local newLevel = Plain(a1) or Plain(UnitLevel("player")) or 0
         xpp.levelTime = 0
-        xpp.accumXP = xpp.accumXP + (UnitXPMax("player") or 0) - xpp.initXP
-        xpp.initXP = 0
+        UpdateSessionXP()
         -- Check if we just hit max level
         if IsMaxLevel() then
             xpp.isMaxLevel = true
             HideBar()
+            UpdateDefaultXPBar()
             local btn = _G[TITAN_XPP_BUTTON]
             if btn then btn:Hide() end
         end
@@ -755,7 +810,7 @@ local function OnEvent(self, event, a1, a2, ...)
         end
 
     elseif event == "CHAT_MSG_COMBAT_XP_GAIN" then
-        if a1 then
+        if not (issecretvalue and issecretvalue(a1)) and a1 then
             local killXP = a1:match("(%d+) experience")
                 or a1:match("(%d+) point")
                 or a1:match("(%d+)")
@@ -781,7 +836,7 @@ end
 -- ******************************** Right-Click Menu *******************************
 
 local function ResetThisSession()
-    ResetSession(_G[TITAN_XPP_BUTTON])
+    ResetSession()
     TitanPanelButton_UpdateButton(TITAN_XPP_ID)
 end
 
@@ -926,7 +981,8 @@ local function OnShow(self)
     self:RegisterEvent("QUEST_LOG_UPDATE")
     pcall(function() self:RegisterEvent("QUEST_TURNED_IN") end)
 
-    if Titan_Global and Titan_Global.switch and Titan_Global.switch.has_secrets then
+    if (WOW_PROJECT_CAMELOT and WOW_PROJECT_ID == WOW_PROJECT_CAMELOT)
+        or (Titan_Global and Titan_Global.switch and Titan_Global.switch.has_secrets) then
         -- Retail
     else
         pcall(function() self:RegisterEvent("CHAT_MSG_COMBAT_XP_GAIN") end)
@@ -947,6 +1003,12 @@ local function OnShow(self)
 end
 
 local function OnHide(self)
+    statusBarWanted = false
+    if StatusTrackingBarManager then ScheduleStatusBar() end
+    if MainMenuExpBar and not StatusTrackingBarManager
+        and not (WOW_PROJECT_CAMELOT and WOW_PROJECT_ID == WOW_PROJECT_CAMELOT) then
+        MainMenuExpBar:Show()
+    end
     pcall(function() self:UnregisterEvent("TIME_PLAYED_MSG") end)
     pcall(function() self:UnregisterEvent("PLAYER_XP_UPDATE") end)
     pcall(function() self:UnregisterEvent("PLAYER_LEVEL_UP") end)
@@ -981,7 +1043,7 @@ local function OnLoad(self)
     self.registry = {
         id = TITAN_XPP_ID,
         category = "Information",
-        version = "1.0.0",
+        version = "1.1.0",
         menuText = "XP+",
         menuContextFunction = menuCtx,
         menuTextFunction = menuTxt,
@@ -1014,10 +1076,7 @@ local function OnLoad(self)
         },
     }
 
-    HookTimePlayed()
-
     self:RegisterEvent("PLAYER_ENTERING_WORLD")
-    ResetSession(self)
 end
 
 -- ******************************** Frame Creation *******************************
@@ -1069,10 +1128,6 @@ local function Create_Frames()
         end)
     end)
 
-    function window:RequestTimePlayed()
-        xpp_requesting = true
-        RequestTimePlayed()
-    end
 end
 
 if TITAN_ID then
