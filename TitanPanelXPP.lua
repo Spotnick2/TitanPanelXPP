@@ -1043,7 +1043,7 @@ local function OnLoad(self)
     self.registry = {
         id = TITAN_XPP_ID,
         category = "Information",
-        version = "1.1.0",
+        version = "1.1.1",
         menuText = "XP+",
         menuContextFunction = menuCtx,
         menuTextFunction = menuTxt,

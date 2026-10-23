@@ -62,7 +62,7 @@ local toc = assert(io.open("TitanPanelXPP.toc", "r"))
 local metadata = toc:read("*a")
 toc:close()
 assert(metadata:match("## Interface:[^\n]*16001"), "Forever interface must be in the TOC")
-assert(metadata:match("## Version: 1%.1%.0"), "release version must match the TOC")
+assert(metadata:match("## Version: 1%.1%.1"), "release version must match the TOC")
 assert(metadata:match("## Dependencies: Titan"), "Titan must load before this plugin")
 
 dofile("TitanPanelXPP.lua")
